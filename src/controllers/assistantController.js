@@ -296,7 +296,7 @@ ${upcomingEvents.map(e => `  - ${e.title} on ${e.date} at ${e.time}`).join('\n')
             });
           }),
           new Promise((res, rej) => {
-            db.all('SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = "expense" AND date LIKE ?', 
+            db.all("SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND type = 'expense' AND date LIKE ?", 
               [userId, `${currentMonth}%`], (err, rows) => {
               if (err) return rej(err);
               userData.monthlyExpenses = rows[0]?.total || 0;

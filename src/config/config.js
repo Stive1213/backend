@@ -32,5 +32,18 @@ module.exports = {
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization'],
   },
+  
+  database: {
+    connectionString: process.env.DATABASE_URL || process.env.EXTERNAL_DATABASE_URL,
+    host: process.env.DB_HOST,
+    port: process.env.DB_PORT || 5432,
+    database: process.env.DB_NAME,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    // Render PostgreSQL requires SSL, but we can skip certificate verification
+    ssl: (process.env.DATABASE_URL || process.env.EXTERNAL_DATABASE_URL || process.env.DB_HOST) 
+      ? { rejectUnauthorized: false } 
+      : false,
+  },
 };
 
