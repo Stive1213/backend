@@ -8,9 +8,13 @@ async function callGeminiRestApi(modelName, prompt, apiKey) {
   // Try v1 first, then v1beta
   const apiVersions = ['v1', 'v1beta'];
   
+  let lastError = null;
+  
   for (const version of apiVersions) {
     try {
       const url = `https://generativelanguage.googleapis.com/${version}/models/${modelName}:generateContent?key=${apiKey}`;
+      console.log(`Attempting ${version} API call for model: ${modelName}`);
+      
       const response = await globalFetch(url, {
         method: 'POST',
         headers: {
@@ -28,30 +32,92 @@ async function callGeminiRestApi(modelName, prompt, apiKey) {
       if (response.ok) {
         const data = await response.json();
         if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+          console.log(`✓ Successfully got response from ${modelName} using ${version} API`);
           return data.candidates[0].content.parts[0].text;
+        } else {
+          console.error(`Unexpected response format from ${modelName}:`, JSON.stringify(data, null, 2));
         }
       } else {
         // Handle error response - might be JSON or plain text
         let errorText = '';
+        let errorDetails = null;
         const contentType = response.headers.get('content-type');
         try {
           if (contentType && contentType.includes('application/json')) {
             const errorData = await response.json();
-            errorText = errorData.error?.message || errorData.message || JSON.stringify(errorData);
+            errorDetails = errorData;
+            errorText = errorData.error?.message || errorData.error?.status || errorData.message || JSON.stringify(errorData);
           } else {
             errorText = await response.text();
           }
         } catch (parseError) {
           errorText = `HTTP ${response.status}: ${response.statusText}`;
         }
-        console.log(`API version ${version} returned ${response.status}:`, errorText);
+        
+        const errorMsg = `API ${version} returned ${response.status} for ${modelName}: ${errorText}`;
+        console.error(errorMsg);
+        if (errorDetails) {
+          console.error('Full error details:', JSON.stringify(errorDetails, null, 2));
+        }
+        
+        // Store error for throwing later if all versions fail
+        lastError = new Error(errorMsg);
       }
     } catch (e) {
-      console.log(`API version ${version} failed for ${modelName}:`, e.message);
+      const errorMsg = `API ${version} call failed for ${modelName}: ${e.message}`;
+      console.error(errorMsg);
+      lastError = new Error(errorMsg);
       continue;
     }
   }
-  throw new Error('All API versions failed');
+  
+  // Throw detailed error if all versions failed
+  throw lastError || new Error(`All API versions failed for model ${modelName}`);
+}
+
+// Helper function to list and log available models (for debugging)
+async function listAvailableModels(apiKey) {
+  try {
+    const globalFetch = typeof fetch !== 'undefined' ? fetch : require('node-fetch');
+    
+    console.log('Listing available models from Google AI Studio...');
+    
+    // Try v1 first
+    const listUrl = `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`;
+    const listResponse = await globalFetch(listUrl);
+    
+    if (!listResponse.ok) {
+      // Try v1beta
+      const listUrlBeta = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
+      const listResponseBeta = await globalFetch(listUrlBeta);
+      
+      if (listResponseBeta.ok) {
+        const listData = await listResponseBeta.json();
+        console.log('Available models (v1beta):', listData.models?.map(m => m.name.replace('models/', '')).join(', ') || 'None');
+        return listData;
+      }
+      
+      const errorText = await listResponseBeta.text().catch(() => listResponseBeta.statusText);
+      console.error(`Failed to list models: ${listResponseBeta.status} ${errorText}`);
+      return null;
+    }
+    
+    const listData = await listResponse.json();
+    const modelNames = listData.models?.map(m => m.name.replace('models/', '')).join(', ') || 'None';
+    console.log('Available models (v1):', modelNames);
+    
+    // Log free tier models specifically
+    const freeTierModels = listData.models?.filter(m => {
+      const name = m.name.replace('models/', '');
+      return name.includes('flash') || name.includes('gemini-1.0-pro');
+    }).map(m => m.name.replace('models/', '')) || [];
+    console.log('Free tier models found:', freeTierModels.join(', ') || 'None');
+    
+    return listData;
+  } catch (error) {
+    console.error('Error listing models:', error.message);
+    return null;
+  }
 }
 
 // Helper function to parse actionable items from AI response
@@ -78,8 +144,13 @@ function parseActionableItems(aiResponse) {
 
 // Helper function to try available models (free tier only)
 async function tryAvailableModels(listData, prompt, apiKey, res) {
-  // Free tier model names - only these are allowed
-  const freeTierModelNames = ['gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  // Free tier model names - only these are allowed (prioritize newer ones first)
+  const freeTierModelNames = [
+    'gemini-2.5-flash-lite',  // Newest free tier (highest throughput)
+    'gemini-2.5-flash',       // New free tier (balanced)
+    'gemini-1.5-flash',       // Older free tier (still available)
+    'gemini-1.0-pro',         // Older free tier (still available)
+  ];
   
   if (listData.models && listData.models.length > 0) {
     const availableModels = listData.models
@@ -130,7 +201,13 @@ async function tryAvailableModels(listData, prompt, apiKey, res) {
 
 // Helper function to try direct REST API with common models (free tier only)
 async function tryDirectRestApi(prompt, apiKey, res) {
-  const commonModels = ['gemini-1.5-flash', 'gemini-1.0-pro'];
+  // Try newer models first, then fallback to older ones
+  const commonModels = [
+    'gemini-2.5-flash-lite',  // Newest free tier
+    'gemini-2.5-flash',       // New free tier
+    'gemini-1.5-flash',       // Older free tier
+    'gemini-1.0-pro',         // Older free tier
+  ];
   
   for (const modelName of commonModels) {
     try {
@@ -145,11 +222,15 @@ async function tryDirectRestApi(prompt, apiKey, res) {
               });
             }
     } catch (modelError) {
-      console.log(`Model ${modelName} failed:`, modelError.message);
+      console.error(`Model ${modelName} failed:`, modelError.message);
+      console.error(`Error stack for ${modelName}:`, modelError.stack);
+      // Continue to next model
       continue;
     }
   }
-  throw new Error(`None of the common models worked. Please check your API key in Google AI Studio.`);
+  
+  // If we get here, all models failed - provide detailed error
+  throw new Error(`None of the free tier models worked. Please check: 1) Your API key is valid, 2) Models are enabled in Google AI Studio, 3) You haven't exceeded quota. Try enabling models in Google AI Studio at https://aistudio.google.com/app/apikey`);
 }
 
 const getAssistantResponse = async (req, res) => {
@@ -387,11 +468,16 @@ Only include items that the user explicitly wants to create or that are clearly 
     console.log('API Key present:', !!apiKey);
     console.log('Prompt length:', prompt.length);
     
+    // First, list available models to help diagnose issues
+    const availableModelsData = await listAvailableModels(apiKey);
+    
     // Use REST API directly - skip SDK to avoid deprecated model issues
-    // Only use FREE tier models
+    // Only use FREE tier models (newest first)
     const freeTierModels = [
-      'gemini-1.5-flash',     // Fast, free tier model - PRIMARY
-      'gemini-1.0-pro',       // Free tier model - FALLBACK
+      'gemini-2.5-flash-lite',  // Newest free tier - highest priority
+      'gemini-2.5-flash',       // New free tier
+      'gemini-1.5-flash',       // Older free tier
+      'gemini-1.0-pro',         // Older free tier - fallback
     ];
     
     let lastError = null;
@@ -402,7 +488,7 @@ Only include items that the user explicitly wants to create or that are clearly 
       await tryDirectRestApi(prompt, apiKey, res);
       return; // Success!
     } catch (directError) {
-      console.log('Direct REST API with free models failed, trying to list available models...');
+      console.error('Direct REST API with free models failed:', directError.message);
       lastError = directError;
     }
     
