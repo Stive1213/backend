@@ -1,5 +1,5 @@
 const { db } = require('../config/db');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+// Using REST API directly - no SDK needed (avoids deprecated model issues)
 
       // Helper function to call Gemini REST API directly
 async function callGeminiRestApi(modelName, prompt, apiKey) {
@@ -31,8 +31,20 @@ async function callGeminiRestApi(modelName, prompt, apiKey) {
           return data.candidates[0].content.parts[0].text;
         }
       } else {
-        const errorData = await response.json().catch(() => ({}));
-        console.log(`API version ${version} returned ${response.status}:`, errorData);
+        // Handle error response - might be JSON or plain text
+        let errorText = '';
+        const contentType = response.headers.get('content-type');
+        try {
+          if (contentType && contentType.includes('application/json')) {
+            const errorData = await response.json();
+            errorText = errorData.error?.message || errorData.message || JSON.stringify(errorData);
+          } else {
+            errorText = await response.text();
+          }
+        } catch (parseError) {
+          errorText = `HTTP ${response.status}: ${response.statusText}`;
+        }
+        console.log(`API version ${version} returned ${response.status}:`, errorText);
       }
     } catch (e) {
       console.log(`API version ${version} failed for ${modelName}:`, e.message);
@@ -64,44 +76,61 @@ function parseActionableItems(aiResponse) {
   return { cleanResponse, actionableItems };
 }
 
-// Helper function to try available models
+// Helper function to try available models (free tier only)
 async function tryAvailableModels(listData, prompt, apiKey, res) {
+  // Free tier model names - only these are allowed
+  const freeTierModelNames = ['gemini-1.5-flash', 'gemini-1.0-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+  
   if (listData.models && listData.models.length > 0) {
     const availableModels = listData.models
-      .filter(m => m.supportedGenerationMethods && m.supportedGenerationMethods.includes('generateContent'))
-      .map(m => m.name.replace('models/', ''));
+      .filter(m => {
+        const modelName = m.name.replace('models/', '');
+        // Only allow free tier models
+        return freeTierModelNames.includes(modelName) && 
+               m.supportedGenerationMethods && 
+               m.supportedGenerationMethods.includes('generateContent');
+      })
+      .map(m => m.name.replace('models/', ''))
+      .sort((a, b) => {
+        // Prioritize flash models first (they're faster and more available)
+        const aIsFlash = a.includes('flash');
+        const bIsFlash = b.includes('flash');
+        if (aIsFlash && !bIsFlash) return -1;
+        if (!aIsFlash && bIsFlash) return 1;
+        return 0;
+      });
     
-    console.log('Available models that support generateContent:', availableModels);
+    console.log('Available FREE tier models that support generateContent:', availableModels);
     
     if (availableModels.length === 0) {
-      throw new Error('No models found that support generateContent');
+      throw new Error('No free tier models found that support generateContent');
     }
     
-    // Try each available model using REST API
+    // Try each available free tier model using REST API
     for (const workingModelName of availableModels) {
       try {
-        console.log(`Trying model via REST API: ${workingModelName}`);
-              const response = await callGeminiRestApi(workingModelName, prompt, apiKey);
-              if (response) {
-                const { cleanResponse, actionableItems } = parseActionableItems(response);
-                return res.json({ 
-                  response: cleanResponse, 
-                  tips: [],
-                  actionableItems: actionableItems
-                });
-              }
+        console.log(`Trying FREE tier model via REST API: ${workingModelName}`);
+        const response = await callGeminiRestApi(workingModelName, prompt, apiKey);
+        if (response) {
+          const { cleanResponse, actionableItems } = parseActionableItems(response);
+          return res.json({ 
+            response: cleanResponse, 
+            tips: [],
+            actionableItems: actionableItems
+          });
+        }
       } catch (modelError) {
-        console.log(`Model ${workingModelName} failed:`, modelError.message);
+        console.log(`Free tier model ${workingModelName} failed:`, modelError.message);
         continue;
       }
     }
   }
-  throw new Error('No working models found');
+  throw new Error('No working free tier models found');
 }
 
-// Helper function to try direct REST API with common models
+// Helper function to try direct REST API with common models (free tier only)
 async function tryDirectRestApi(prompt, apiKey, res) {
-  const commonModels = ['gemini-pro', 'gemini-1.0-pro', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+  const commonModels = ['gemini-1.5-flash', 'gemini-1.0-pro'];
   
   for (const modelName of commonModels) {
     try {
@@ -347,166 +376,76 @@ IMPORTANT: If the user is asking for a plan, tasks, habits, or goals that should
 
 Only include items that the user explicitly wants to create or that are clearly part of a plan they're requesting. If no items should be created, omit the <ACTIONABLE_ITEMS> section entirely.`;
 
-    // Initialize Gemini AI (with fallback to provided key)
+    // Get API key
     const apiKey = process.env.GEMINI_API_KEY || 'AIzaSyBPrFD1oX9Dpu3DwPrWYeuFk6xh6HcgNGs';
     
     if (!apiKey) {
       throw new Error('Gemini API key is not configured');
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    
-    // Try to list available models first (for debugging)
-    let availableModels = [];
-    try {
-      // Note: ListModels might not be available in all SDK versions, so we'll try-catch it
-      console.log('Checking available models...');
-    } catch (listError) {
-      console.log('Could not list models:', listError.message);
-    }
-    
-    // For free tier API, the model name might need to be just "gemini-pro"
-    // Try multiple common free tier model names
-    const freeTierModels = [
-      'gemini-pro',           // Most common free tier model
-      'gemini-1.0-pro',       // Versioned free tier model  
-      'gemini-1.5-flash',     // Flash model (if available in free tier)
-    ];
-    
-    let model;
-    let modelName = null;
-    let modelError = null;
-    
-    // Try each model name - we'll test them during the actual API call
-    for (const testModelName of freeTierModels) {
-      try {
-        model = genAI.getGenerativeModel({ model: testModelName });
-        modelName = testModelName;
-        console.log(`Initialized model: ${testModelName}`);
-        break; // Use the first one that initializes
-      } catch (initError) {
-        modelError = initError;
-        console.log(`Model ${testModelName} initialization failed: ${initError.message}`);
-        continue;
-      }
-    }
-    
-    if (!model || !modelName) {
-      throw new Error(`Could not initialize any Gemini model. Tried: ${freeTierModels.join(', ')}. Please verify your API key is valid for the free tier.`);
-    }
-
-    // Generate response
-    console.log('Sending request to Gemini AI...');
+    console.log('Sending request to Gemini AI using REST API (FREE TIER MODELS ONLY)...');
     console.log('API Key present:', !!apiKey);
     console.log('Prompt length:', prompt.length);
-    console.log('Using model:', modelName);
     
+    // Use REST API directly - skip SDK to avoid deprecated model issues
+    // Only use FREE tier models
+    const freeTierModels = [
+      'gemini-1.5-flash',     // Fast, free tier model - PRIMARY
+      'gemini-1.0-pro',       // Free tier model - FALLBACK
+    ];
+    
+    let lastError = null;
+    
+    // Try using REST API directly with free tier models first
+    console.log('Trying REST API with FREE tier models only...');
     try {
-      // Try to generate content - if model name is wrong, we'll catch it here
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
+      await tryDirectRestApi(prompt, apiKey, res);
+      return; // Success!
+    } catch (directError) {
+      console.log('Direct REST API with free models failed, trying to list available models...');
+      lastError = directError;
+    }
+    
+    // Try to list available models and filter for free tier only
+    try {
+      const globalFetch = typeof fetch !== 'undefined' ? fetch : require('node-fetch');
       
-      // Extract text from response - response.text() is a method
-      let aiResponse;
-      try {
-        // Standard way to get text from Gemini response
-        aiResponse = response.text();
-      } catch (textError) {
-        // Fallback: try to extract from candidates if text() method fails
-        console.log('text() method failed, trying alternative extraction:', textError.message);
-        if (response.candidates && response.candidates[0] && response.candidates[0].content) {
-          aiResponse = response.candidates[0].content.parts[0].text;
-        } else {
-          console.error('Unexpected response format:', JSON.stringify(response, null, 2));
-          throw new Error('Unable to extract text from Gemini AI response');
-        }
-      }
+      // Try v1 first
+      console.log('Fetching available FREE tier models...');
+      const listUrl = `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`;
+      const listResponse = await globalFetch(listUrl);
       
-      if (!aiResponse || aiResponse.trim().length === 0) {
-        throw new Error('Empty response from Gemini AI');
-      }
-      
-      console.log('Successfully received response from Gemini AI, length:', aiResponse.length);
-      
-      // Parse actionable items from the response using the helper function
-      const { cleanResponse, actionableItems } = parseActionableItems(aiResponse);
-      
-      // Return the response with actionable items if present
-      res.json({ 
-        response: cleanResponse, 
-        tips: [], // Tips can be extracted from AI response if needed, but keeping empty for now
-        actionableItems: actionableItems // Include parsed actionable items
-      });
-      return;
-    } catch (apiError) {
-      console.error('Gemini API error:', apiError);
-      console.error('API Error details:', {
-        message: apiError.message,
-        status: apiError.status,
-        statusText: apiError.statusText,
-        response: apiError.response?.data
-      });
-      
-      // Check for 404 - model not found error
-      if (apiError.message && (apiError.message.includes('404') || apiError.message.includes('not found'))) {
-        console.log('Model not found. Attempting to check available models and use REST API directly...');
-        
-        // Try using REST API directly instead of SDK
-        try {
-          // Use built-in fetch (Node.js 18+) 
-          const globalFetch = typeof fetch !== 'undefined' ? fetch : require('node-fetch');
-          
-          // First, try to list available models
-          console.log('Fetching available models...');
-          const listUrl = `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`;
-          const listResponse = await globalFetch(listUrl);
-          
-          if (!listResponse.ok) {
-            // Try v1beta if v1 fails
-            console.log('v1 failed, trying v1beta...');
-            const listUrlBeta = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
-            const listResponseBeta = await globalFetch(listUrlBeta);
-            if (listResponseBeta.ok) {
-              const listData = await listResponseBeta.json();
-              await tryAvailableModels(listData, prompt, apiKey, res);
-              return;
-            }
-            console.log(`Could not list models: ${listResponse.status} ${listResponse.statusText}`);
-            // Fall through to try direct REST API
-          } else {
-            const listData = await listResponse.json();
+      if (!listResponse.ok) {
+        // Try v1beta if v1 fails
+        console.log('v1 failed, trying v1beta...');
+        const listUrlBeta = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`;
+        const listResponseBeta = await globalFetch(listUrlBeta);
+        if (listResponseBeta.ok) {
+          try {
+            const listData = await listResponseBeta.json();
             await tryAvailableModels(listData, prompt, apiKey, res);
             return;
+          } catch (jsonError) {
+            console.error('Failed to parse model list JSON:', jsonError.message);
           }
-          
-        } catch (listError) {
-          console.error('Could not list models:', listError.message);
-          console.error('List error details:', listError);
         }
-        
-        // Fallback: Try using REST API directly with common model names
-        console.log('Trying direct REST API calls with common model names...');
+        const errorText = await listResponseBeta.text().catch(() => listResponseBeta.statusText);
+        console.log(`Could not list models: ${listResponseBeta.status} ${errorText}`);
+      } else {
         try {
-          await tryDirectRestApi(prompt, apiKey, res);
+          const listData = await listResponse.json();
+          await tryAvailableModels(listData, prompt, apiKey, res);
           return;
-        } catch (directError) {
-          throw new Error(`Model "${modelName}" not found. Tried to auto-detect available models but failed. Please check your API key and available models in Google AI Studio. Error: ${apiError.message}`);
+        } catch (jsonError) {
+          console.error('Failed to parse model list JSON:', jsonError.message);
         }
       }
-      
-      // Check for specific API errors
-      if (apiError.message && apiError.message.includes('API_KEY')) {
-        throw new Error('Invalid or missing Gemini API key. Please check your API key configuration.');
-      }
-      if (apiError.message && apiError.message.includes('quota')) {
-        throw new Error('Gemini API quota exceeded. Please check your API usage limits.');
-      }
-      if (apiError.message && apiError.message.includes('safety')) {
-        throw new Error('Content was blocked by Gemini safety filters. Please rephrase your question.');
-      }
-      
-      throw apiError;
+    } catch (listError) {
+      console.error('Could not list models:', listError.message);
     }
+    
+    // Final error - tried everything
+    throw new Error(`Failed to get AI response using FREE tier models only. Tried: ${freeTierModels.join(', ')}. Please check your API key and ensure you have access to free tier models in Google AI Studio. Last error: ${lastError?.message || 'Unknown error'}`);
 
   } catch (error) {
     console.error('Error in assistant controller:', error);

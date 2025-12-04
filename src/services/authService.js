@@ -82,7 +82,29 @@ class AuthService {
               if (err) console.error('Error initializing points:', err);
             }
           );
-          resolve({ id: userId, ...userData });
+          
+          // Fetch the complete user object from database to return
+          db.get(
+            'SELECT * FROM users WHERE id = ?',
+            [userId],
+            (fetchErr, user) => {
+              if (fetchErr) {
+                // If fetch fails, return basic user data
+                resolve({ 
+                  id: userId, 
+                  username: userData.username,
+                  email: userData.email,
+                  first_name: userData.firstName,
+                  last_name: userData.lastName,
+                  profile_image: userData.profileImage,
+                  age: userData.age,
+                  google_id: userData.googleId,
+                });
+              } else {
+                resolve(user);
+              }
+            }
+          );
         }
       });
     });

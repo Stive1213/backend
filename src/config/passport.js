@@ -76,7 +76,14 @@ if (config.google.clientId && config.google.clientSecret) {
           googleId,
         });
 
-        return done(null, newUser);
+        // Ensure the user object has the expected structure
+        if (newUser) {
+          // Fetch the complete user profile to ensure all fields are present
+          const userProfile = await authService.getUserProfile(newUser.id);
+          return done(null, userProfile || newUser);
+        }
+        
+        return done(new Error('Failed to create user'), null);
       } catch (error) {
         return done(error, null);
       }

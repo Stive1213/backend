@@ -131,14 +131,41 @@ const login = async (req, res, next) => {
   }
 };
 
-const googleCallback = (req, res) => {
+const googleCallback = async (req, res) => {
   try {
-    const token = authService.generateToken(req.user);
+    // Ensure req.user exists
+    if (!req.user) {
+      console.error('Google OAuth callback: req.user is missing');
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      return res.redirect(`${frontendUrl}/auth/callback?error=authentication_failed`);
+    }
+
+    // Fetch complete user profile to ensure all fields are present
+    const userProfile = await authService.getUserProfile(req.user.id);
+    
+    if (!userProfile) {
+      console.error('Google OAuth callback: User profile not found for id:', req.user.id);
+      const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+      return res.redirect(`${frontendUrl}/auth/callback?error=user_not_found`);
+    }
+
+    // Ensure user has required fields for token generation
+    const userForToken = {
+      id: userProfile.id,
+      username: userProfile.username || userProfile.email?.split('@')[0] || 'user',
+      email: userProfile.email || req.user.email || '',
+    };
+
+    // Generate token with complete user info
+    const token = authService.generateToken(userForToken);
+    
+    console.log('Google OAuth callback: Successfully authenticated user:', userForToken.username);
     
     // Redirect to frontend with token
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     res.redirect(`${frontendUrl}/auth/callback?token=${token}`);
   } catch (err) {
+    console.error('Google OAuth callback error:', err);
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
     res.redirect(`${frontendUrl}/auth/callback?error=authentication_failed`);
   }

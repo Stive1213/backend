@@ -19,8 +19,19 @@ const authLimiter = rateLimit({
   skipSuccessfulRequests: true,
 });
 
+// Assistant/AI rate limiter (more lenient for AI queries)
+const assistantLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 30, // Limit each IP to 30 AI requests per windowMs (more lenient)
+  message: 'Too many AI requests. Please wait a moment before asking another question.',
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipFailedRequests: false,
+});
+
 module.exports = {
   apiLimiter,
   authLimiter,
+  assistantLimiter,
 };
 
