@@ -35,6 +35,9 @@ GOOGLE_CALLBACK_URL=http://localhost:5000/auth/google/callback
 
 # Frontend URL (for CORS)
 FRONTEND_URL=http://localhost:5173
+
+# Gemini AI Configuration (Backend Only - Never expose to frontend)
+GEMINI_API_KEY=your-gemini-api-key-here
 ```
 
 ## Installation

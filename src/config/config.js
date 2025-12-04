@@ -61,5 +61,9 @@ module.exports = {
       ? { rejectUnauthorized: false } 
       : false,
   },
+  
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY, // Never expose to frontend - backend only
+  },
 };
 

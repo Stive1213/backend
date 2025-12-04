@@ -457,11 +457,11 @@ IMPORTANT: If the user is asking for a plan, tasks, habits, or goals that should
 
 Only include items that the user explicitly wants to create or that are clearly part of a plan they're requesting. If no items should be created, omit the <ACTIONABLE_ITEMS> section entirely.`;
 
-    // Get API key
-    const apiKey = process.env.GEMINI_API_KEY || 'AIzaSyBPrFD1oX9Dpu3DwPrWYeuFk6xh6HcgNGs';
+    // Get API key from environment variables only (never hardcoded for security)
+    const apiKey = process.env.GEMINI_API_KEY;
     
     if (!apiKey) {
-      throw new Error('Gemini API key is not configured');
+      throw new Error('Gemini API key is not configured. Please set GEMINI_API_KEY in your environment variables.');
     }
 
     console.log('Sending request to Gemini AI using REST API (FREE TIER MODELS ONLY)...');
